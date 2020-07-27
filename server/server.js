@@ -11,6 +11,10 @@ var wss = new WebSocket.Server({ port: 42998 });
 var text = "";
 
 var editors = [];
+var chance={
+  server: 1,
+  client: 1
+}
 
 wss.on("connection", function (ws, req) {
     var shadow = {
@@ -33,32 +37,66 @@ wss.on("connection", function (ws, req) {
             var { action, payload } = data;
             console.log(data);
             switch (action) {
+                case "SET_CHANCE":{
+                    chance[payload.name] = payload.value;
+                    sendAll(
+                        {
+                            action: "SET_CHANCE",
+                            payload: {
+                                chance,
+                            },
+                        },
+                        [ws]
+                    );
+                    break;
+                }
                 case "PATCH": {
-                    if (shadow.m < payload.m) {
-                        shadow.value = backup.value;
-                        shadow.m--;
-                    }
-                    console.log(shadow);
+                    
+                    if(Math.random() >= 1- chance.server){
+                      if (shadow.m > payload.m && backup.m === payload.m) {
+                          console.log("revert!!", backup);
+                          //revert to backup
+                          shadow.value = backup.value;
+                          shadow.m = backup.m;
+                          ws.mdata.edits = [];
+                      }
+                      console.log(shadow);
+  
+                      //generate patch that ignore old n
+                      
+                      var filtered = payload.edits.filter((edit) => edit.n >= shadow.n);
+                   
+                      if(filtered.length > 0){
+                         var patches = joinPatch(filtered);
+                        console.log("patches:", patches);
+                        //update shadow copy
+                        shadow.value = strPatch(shadow.value, patches);
+    
+                        shadow.n = filtered[filtered.length -1].n+1;
+                        console.log("shadow: ", shadow.value);
+                        
+                        
+                        
+                        //backup
+                        ws.mdata.backup = {
+                            ...shadow,
+                        };
+    
+    
+                        //update server copy
+                        text = strPatch(text, patches);
+                        console.log("main: ", text);
+    
+                        //clear old edits
+                        ws.mdata.edits = [];
+                        
+                        if(Math.random() >= 1- chance.client){
+                          editors.forEach(editor => patchClient(editor, editor === ws));
+                        }
+                      }
 
-                    //generate patch that ignore old n
-                    var patches = joinPatch(payload.edits.filter((edit) => edit.n >= shadow.n));
-
-                    console.log("patches:", patches);
-                    //update shadow copy
-                    shadow.value = strPatch(shadow.value, patches);
-
-                    console.log("shadow: ", shadow.value);
-                    shadow.n++;
-
-                    //update server copy
-                    text = strPatch(text, patches);
-                    console.log("main: ", text);
-
-                    ws.mdata.edits = [];
-
-                    editors.forEach((editor) => {
-                        patchClient(editor);
-                    });
+                    
+                   }
                     break;
                 }
                 case "JOIN":
@@ -68,6 +106,7 @@ wss.on("connection", function (ws, req) {
                         payload: {
                             names: getNames(),
                             shadow: shadow,
+                            chance
                         },
                     });
                     sendAll(
@@ -100,7 +139,7 @@ wss.on("connection", function (ws, req) {
         editors = editors.filter((editor) => editor !== ws);
         sendAll(
             {
-                action: "LEAVE",
+                action: "UPDATE_NAMES",
                 payload: {
                     names: getNames(),
                 },
@@ -110,28 +149,24 @@ wss.on("connection", function (ws, req) {
     });
 });
 
-function patchClient(editor) {
+function patchClient(editor, sendAnyway) {
     const { shadow, edits } = editor.mdata;
     var diff = jsonpatch.compare(shadow.value, text);
-    if (diff.length > 0) {
+    if (sendAnyway || diff.length > 0) {
         edits.push({
             m: shadow.m,
             diff,
         });
+        shadow.value = text;
+        shadow.m++;
+        send(editor, {
+            action: "PATCH",
+            payload: {
+                n: shadow.n,
+                edits: edits,
+            },
+        });
     }
-
-    editor.mdata.backup = {
-        ...shadow,
-    };
-    shadow.value = text;
-    shadow.m++;
-    send(editor, {
-        action: "PATCH",
-        payload: {
-            n: shadow.n,
-            edits: edits,
-        },
-    });
 }
 
 function joinPatch(edits) {

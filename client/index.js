@@ -2,6 +2,33 @@ var $status = document.getElementById("status");
 var $name = document.getElementById("name");
 var $editors = document.getElementById("editors");
 var $textfield = document.getElementById("textfield");
+var $timeoutIndicator = document.getElementById("timeoutIndicator");
+var $timeoutDelayLabel = document.getElementById("timeoutDelayLabel");
+var $timeoutDelay = document.getElementById("timeoutDelay");
+var $mnLabel = document.getElementById("mnLabel");
+var $serverChance = document.getElementById("serverChance");
+var $clientChance = document.getElementById("clientChance");
+var $field = document.getElementById("field");
+
+
+function onChanceChange(){
+    send({
+        action: "SET_CHANCE",
+        payload: {
+            name: this.getAttribute("name"),
+            value:this.value
+        },
+    });
+}
+$serverChance.onchange = onChanceChange;
+$clientChance.onchange = onChanceChange;
+
+
+$timeoutDelay.oninput = function(){
+    $timeoutDelayLabel.innerHTML = "Patch Delay: "+this.value+"ms";
+}
+
+
 $name.value = localStorage.getItem("name");
 $name.onchange = function () {
     var name = this.value;
@@ -31,6 +58,7 @@ var socket = new WebSocket("ws://142.11.215.231:42998");
 // Connection opened
 socket.addEventListener("open", function (event) {
     $status.innerHTML = "ONLINE";
+    $field.disabled = false;
     send({
         action: "JOIN",
         payload: {
@@ -42,6 +70,8 @@ socket.addEventListener("open", function (event) {
 // Connection closed
 socket.addEventListener("close", function (event) {
     $status.innerHTML = "OFFLINE";
+      $field.disabled = true;
+
 });
 socket.addEventListener("error", function (event) {});
 
@@ -59,20 +89,32 @@ socket.addEventListener("message", function (event) {
             backup = {
                 ...shadow,
             };
+            $serverChance.value = payload.chance.server;
+            $clientChance.value = payload.chance.client;
             break;
         case "UPDATE_NAMES":
             $editors.innerHTML = payload.names;
             break;
-
+        case "SET_CHANCE":
+            $serverChance.value = payload.chance.server;
+            $clientChance.value = payload.chance.client;
+            break;
         case "PATCH":
-            if (shadow.n < payload.n) {
+            if (shadow.n > payload.n && backup.n === payload.n) {
+             
                 shadow.value = backup.value;
                 shadow.n--;
+                console.log("revert!!", backup, shadow);
+                edits = [];
             }
 
             //generate patch that ignore old n
-            var patches = payload.edits
-                .filter((edit) => edit.m >= shadow.m)
+            var filtered = payload.edits
+                .filter((edit) => edit.m >= shadow.m);
+            
+                
+            if(filtered.length>0){
+             var patches = filtered
                 .map((edit) => edit.diff)
                 .reduce((acc, edit) => {
                     for (let patch of edit) {
@@ -80,22 +122,30 @@ socket.addEventListener("message", function (event) {
                     }
                     return acc;
                 }, []);
+              console.log("server generated patch", patches);
+              shadow.m = filtered[filtered.length -1].m+1;
+              //update shadow copy
+              shadow.value = strPatch(shadow.value, patches);
+  
+              backup = {
+                  ...shadow,
+              };
+              edits = [];
+              //update main copy
+              setText(strPatch($textfield.value, patches));
+              updateMNLabel();
+            
+            }
 
-            console.log(patches);
-            shadow.m++;
-            //update shadow copy
-            shadow.value = strPatch(shadow.value, patches);
-
-            backup = {
-                ...shadow,
-            };
-            edits = [];
-            //update main copy
-            setText(strPatch($textfield.value, patches));
-
+            
             break;
     }
 });
+
+function updateMNLabel(){
+  $mnLabel.innerHTML = `N:${shadow.n} M:${shadow.m}`
+}
+
 
 function strPatch(val, patch) {
     return jsonpatch.applyPatch(val.split(""), patch).newDocument.join("");
@@ -113,27 +163,48 @@ function setText(val) {
 
 //DIFFER SYNC
 
+var timeout = null;
 $textfield.onkeyup = function () {
-    var diff = jsonpatch.compare(shadow.value, this.value);
-    if (diff.length > 0) {
-        edits.push({
-            n: shadow.n,
-            diff,
-        });
-
-        shadow.n++;
-        shadow.value = this.value;
-        console.log("send", edits);
-        if (edits.length > 0)
-            send({
-                action: "PATCH",
-                payload: {
-                    edits,
-                    m: shadow.m,
-                },
-            });
+    clearTimeout(timeout);
+    
+    var delay = parseInt($timeoutDelay.value);
+ 
+    if(delay > 0){
+        $timeoutIndicator.innerHTML = "Processing...";
+        timeout = setTimeout(()=>{
+              sendPatch(this.value);
+        },delay);
+    }else{
+        sendPatch(this.value);
     }
 };
+
+function sendPatch(text){
+    $timeoutIndicator.innerHTML = "Patched!";
+      var diff = jsonpatch.compare(shadow.value, text);
+      if (diff.length > 0) {
+          edits.push({
+              n: shadow.n,
+              diff,
+          });
+          
+          shadow.value = text;
+          shadow.n++;
+          updateMNLabel();
+          
+          console.log("send", edits);
+               
+          send({
+              action: "PATCH",
+              payload: {
+                  edits,
+                  m: shadow.m,
+              },
+          });
+      }
+  
+}
+
 function copy2Shadow() {
     backup.n = shadow.n;
     backup.value = shadow.value;
