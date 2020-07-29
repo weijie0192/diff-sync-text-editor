@@ -11,10 +11,10 @@ var wss = new WebSocket.Server({ port: 42998 });
 var text = "";
 
 var editors = [];
-var chance={
-  server: 1,
-  client: 1
-}
+var chance = {
+    server: 1,
+    client: 1,
+};
 
 wss.on("connection", function (ws, req) {
     var shadow = {
@@ -37,7 +37,7 @@ wss.on("connection", function (ws, req) {
             var { action, payload } = data;
             console.log(data);
             switch (action) {
-                case "SET_CHANCE":{
+                case "SET_CHANCE": {
                     chance[payload.name] = payload.value;
                     sendAll(
                         {
@@ -51,52 +51,55 @@ wss.on("connection", function (ws, req) {
                     break;
                 }
                 case "PATCH": {
-                    
-                    if(Math.random() >= 1- chance.server){
-                      if (shadow.m > payload.m && backup.m === payload.m) {
-                          console.log("revert!!", backup);
-                          //revert to backup
-                          shadow.value = backup.value;
-                          shadow.m = backup.m;
-                          ws.mdata.edits = [];
-                      }
-                      console.log(shadow);
-  
-                      //generate patch that ignore old n
-                      
-                      var filtered = payload.edits.filter((edit) => edit.n >= shadow.n);
-                   
-                      if(filtered.length > 0){
-                         var patches = joinPatch(filtered);
-                        console.log("patches:", patches);
-                        //update shadow copy
-                        shadow.value = strPatch(shadow.value, patches);
-    
-                        shadow.n = filtered[filtered.length -1].n+1;
-                        console.log("shadow: ", shadow.value);
-                        
-                        
-                        
+                    if (Math.random() >= 1 - chance.server) {
+                        console.log("-----**");
+                        console.log(
+                            "*received-- M:",
+                            payload.m,
+                            "      n: ",
+                            payload.edits.map((edit) => edit.n)
+                        );
+
+                        if (shadow.m > payload.m && backup.m === payload.m) {
+                            console.log("REVERT!!", backup);
+                            //revert to backup
+                            shadow.value = backup.value;
+                            shadow.m = backup.m;
+                            ws.mdata.edits = ws.mdata.edits.filter((edit) => edit.m > shadow.m);
+                        }
+                        console.log(shadow);
+
+                        //generate patch that ignore old n
+
+                        var filtered = payload.edits.filter((edit) => edit.n >= shadow.n);
+
+                        if (filtered.length > 0) {
+                            var patches = joinPatch(filtered);
+                            //   console.log("patches:", patches);
+                            //update shadow copy
+                            shadow.value = strPatch(shadow.value, patches);
+                        }
+
+                        shadow.n = filtered[filtered.length - 1].n;
                         //backup
                         ws.mdata.backup = {
                             ...shadow,
                         };
-    
-    
-                        //update server copy
-                        text = strPatch(text, patches);
-                        console.log("main: ", text);
-    
-                        //clear old edits
-                        ws.mdata.edits = [];
-                        
-                        if(Math.random() >= 1- chance.client){
-                          editors.forEach(editor => patchClient(editor, editor === ws));
-                        }
-                      }
+                        shadow.n++;
 
-                    
-                   }
+                        //clear old edits
+                        ws.mdata.edits = ws.mdata.edits.filter((edit) => edit.m > payload.m);
+
+                        if (filtered.length > 0) {
+                            //update server copy
+                            text = strPatch(text, patches);
+                            console.log("********");
+                            console.log("shadow: ", shadow);
+                            console.log("main: ", text);
+                            console.log("********");
+                            editors.forEach((editor) => patchClient(editor, editor === ws));
+                        }
+                    }
                     break;
                 }
                 case "JOIN":
@@ -106,7 +109,7 @@ wss.on("connection", function (ws, req) {
                         payload: {
                             names: getNames(),
                             shadow: shadow,
-                            chance
+                            chance,
                         },
                     });
                     sendAll(
@@ -157,15 +160,21 @@ function patchClient(editor, sendAnyway) {
             m: shadow.m,
             diff,
         });
-        shadow.value = text;
-        shadow.m++;
-        send(editor, {
-            action: "PATCH",
-            payload: {
-                n: shadow.n,
-                edits: edits,
-            },
-        });
+        editor.mdata.shadow.value = text;
+        editor.mdata.shadow.m++;
+
+        var payload = {
+            n: shadow.n,
+            edits: edits,
+        };
+
+        if (Math.random() >= 1 - chance.client) {
+            // console.log("**to client:", payload);
+            send(editor, {
+                action: "PATCH",
+                payload,
+            });
+        }
     }
 }
 
