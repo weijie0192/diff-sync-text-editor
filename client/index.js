@@ -11,6 +11,8 @@ var $clientChance = document.getElementById("clientChance");
 var $field = document.getElementById("field");
 var $auto = document.getElementById("auto");
 
+var diffSync = module.exports(jsonpatch, "n", "m");
+
 var interval = null;
 $auto.onchange = function () {
     var i = 0;
@@ -58,12 +60,12 @@ var shadow = {
     n: 0,
     m: 0,
     value: "",
+    edits: [],
 };
 var backup = {
     n: 0,
     value: "",
 };
-var edits = [];
 
 // Create WebSocket connection.
 var socket = new WebSocket("ws://142.11.215.231:42998");
@@ -112,56 +114,34 @@ socket.addEventListener("message", function (event) {
             $clientChance.value = payload.chance.client;
             break;
         case "PATCH":
-            if (shadow.n > payload.n && backup.n === payload.n) {
-                shadow.value = backup.value;
-                shadow.n = backup.n;
-                console.log("revert!!", backup, shadow);
-                edits = edits.filter((edit) => edit.n > shadow.n);
-            }
-
-            //generate patch that ignore old n
-            var filtered = payload.edits.filter((edit) => edit.m >= shadow.m);
-
-            if (filtered.length > 0) {
-                var patches = filtered
-                    .map((edit) => edit.diff)
-                    .reduce((acc, edit) => {
-                        for (let patch of edit) {
-                            acc.push(patch);
+            diffSync.onReceive({
+                payload,
+                shadow,
+                backup,
+                onUpdateMain: (patches) => {
+                    console.log("patches", patches);
+                    if (patches.length > 0) {
+                        let text = $textfield.value;
+                        for (let patch of patches) {
+                            if (patch.length > 0) {
+                                text = diffSync.strPatch(text, patch);
+                            }
                         }
-                        return acc;
-                    }, []);
-
-                shadow.value = strPatch(shadow.value, patches);
-            }
-
-            console.log("server generated patch", patches);
-            shadow.m = filtered[filtered.length - 1].m;
-            //update shadow copy
-
-            backup = {
-                ...shadow,
-            };
-            shadow.m++;
-
-            edits = edits.filter((edit) => edit.n > payload.n);
-
-            if (filtered.length > 0) {
-                //update main copy
-                setText(strPatch($textfield.value, patches));
-                updateMNLabel();
-            }
+                        //update main copy
+                        setText(text);
+                    }
+                    updateMNLabel();
+                },
+            });
+            $timeoutIndicator.innerHTML = "Patched!";
 
             break;
     }
 });
 
 function updateMNLabel() {
+    console.log("update", shadow);
     $mnLabel.innerHTML = `N:${shadow.n} M:${shadow.m}`;
-}
-
-function strPatch(val, patch) {
-    return jsonpatch.applyPatch(val.split(""), patch).newDocument.join("");
 }
 
 function send(data) {
@@ -193,35 +173,14 @@ $textfield.onkeyup = function () {
 };
 
 function sendPatch(text) {
-    $timeoutIndicator.innerHTML = "Patched!";
-    var diff = jsonpatch.compare(shadow.value, text);
-    if (diff.length > 0) {
-        edits.push({
-            n: shadow.n,
-            diff,
-        });
-
-        shadow.value = text;
-        shadow.n++;
+    diffSync.onSend(shadow, text, false, (payload) => {
         updateMNLabel();
-
-        var payload = {
-            edits,
-            m: shadow.m,
-        };
-        console.log("send", JSON.stringify(payload));
+        // console.log("**to client:", payload);
+        console.log("send", payload);
 
         send({
             action: "PATCH",
             payload,
         });
-    }
-}
-
-function copy2Shadow() {
-    backup.n = shadow.n;
-    backup.value = shadow.value;
-
-    shadow.m++;
-    shadow.value = $textfield.value;
+    });
 }

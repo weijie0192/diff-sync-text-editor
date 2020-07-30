@@ -6,9 +6,12 @@
 
 var jsonpatch = require("fast-json-patch");
 var WebSocket = require("ws");
+var getDiffSync = require("../common/diff-sync");
 var uid = require("uid");
 var wss = new WebSocket.Server({ port: 42998 });
 var text = "";
+
+var diffSync = getDiffSync(jsonpatch, "m", "n");
 
 var editors = [];
 var chance = {
@@ -21,13 +24,13 @@ wss.on("connection", function (ws, req) {
         n: 0,
         m: 0,
         value: text,
+        edits: [],
     };
     var backup = {
         ...shadow,
     };
     ws.mdata = {
         shadow: shadow,
-        edits: [],
     };
     editors.push(ws);
 
@@ -52,53 +55,43 @@ wss.on("connection", function (ws, req) {
                 }
                 case "PATCH": {
                     if (Math.random() >= 1 - chance.server) {
-                        console.log("-----**");
-                        console.log(
-                            "*received-- M:",
-                            payload.m,
-                            "      n: ",
-                            payload.edits.map((edit) => edit.n)
-                        );
-
-                        if (shadow.m > payload.m && backup.m === payload.m) {
-                            console.log("REVERT!!", backup);
-                            //revert to backup
-                            shadow.value = backup.value;
-                            shadow.m = backup.m;
-                            ws.mdata.edits = ws.mdata.edits.filter((edit) => edit.m > shadow.m);
-                        }
-                        console.log(shadow);
-
-                        //generate patch that ignore old n
-
-                        var filtered = payload.edits.filter((edit) => edit.n >= shadow.n);
-
-                        if (filtered.length > 0) {
-                            var patches = joinPatch(filtered);
-                            //   console.log("patches:", patches);
-                            //update shadow copy
-                            shadow.value = strPatch(shadow.value, patches);
-                        }
-
-                        shadow.n = filtered[filtered.length - 1].n;
-                        //backup
-                        ws.mdata.backup = {
-                            ...shadow,
-                        };
-                        shadow.n++;
-
-                        //clear old edits
-                        ws.mdata.edits = ws.mdata.edits.filter((edit) => edit.m > payload.m);
-
-                        if (filtered.length > 0) {
-                            //update server copy
-                            text = strPatch(text, patches);
-                            console.log("********");
-                            console.log("shadow: ", shadow);
-                            console.log("main: ", text);
-                            console.log("********");
-                            editors.forEach((editor) => patchClient(editor, editor === ws));
-                        }
+                        diffSync.onReceive({
+                            payload,
+                            shadow,
+                            backup,
+                            onUpdateMain: (patches) => {
+                                for (let patch of patches) {
+                                    if (patch.length > 0) {
+                                        //update server copy
+                                        text = diffSync.strPatch(text, patch);
+                                    }
+                                }
+                                console.log("main: ", text);
+                            },
+                            afterUpdate: () => {
+                                editors.forEach((editor) =>
+                                    diffSync.onSend(
+                                        editor.mdata.shadow,
+                                        text,
+                                        editor === ws,
+                                        (payload) => {
+                                            if (Math.random() >= 1 - chance.client) {
+                                                console.log(
+                                                    "Payload to: ",
+                                                    editor.mdata.name,
+                                                    payload
+                                                );
+                                                // console.log("**to client:", payload);
+                                                send(editor, {
+                                                    action: "PATCH",
+                                                    payload,
+                                                });
+                                            }
+                                        }
+                                    )
+                                );
+                            },
+                        });
                     }
                     break;
                 }
@@ -151,47 +144,6 @@ wss.on("connection", function (ws, req) {
         );
     });
 });
-
-function patchClient(editor, sendAnyway) {
-    const { shadow, edits } = editor.mdata;
-    var diff = jsonpatch.compare(shadow.value, text);
-    if (sendAnyway || diff.length > 0) {
-        edits.push({
-            m: shadow.m,
-            diff,
-        });
-        editor.mdata.shadow.value = text;
-        editor.mdata.shadow.m++;
-
-        var payload = {
-            n: shadow.n,
-            edits: edits,
-        };
-
-        if (Math.random() >= 1 - chance.client) {
-            // console.log("**to client:", payload);
-            send(editor, {
-                action: "PATCH",
-                payload,
-            });
-        }
-    }
-}
-
-function joinPatch(edits) {
-    return edits
-        .map((edit) => edit.diff)
-        .reduce((acc, edit) => {
-            for (let patch of edit) {
-                acc.push(patch);
-            }
-            return acc;
-        }, []);
-}
-
-function strPatch(val, patch) {
-    return jsonpatch.applyPatch(val.split(""), patch).newDocument.join("");
-}
 
 function getNames() {
     return editors.map((editor) => editor.mdata.name).join(", ");
